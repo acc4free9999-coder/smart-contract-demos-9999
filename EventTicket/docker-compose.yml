@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  ganache:
+    image: trufflesuite/ganache:latest
+    command: >
+      --deterministic
+      --chain.chainId 1337
+      --wallet.totalAccounts 10
+    ports:
+      - "8545:8545"
+
+  deploy:
+    build:
+      context: .
+      dockerfile: blockchain-deploy/Dockerfile
+    depends_on:
+      - ganache
+    environment:
+      - GANACHE_URL=http://ganache:8545
+      - EVENT_NAME=Demo Concert 2026
+      - OUTPUT_DIR=/shared
+    volumes:
+      - contract-data:/shared
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    depends_on:
+      - deploy
+    environment:
+      - GANACHE_URL=http://ganache:8545
+      - SHARED_DIR=/shared
+    volumes:
+      - contract-data:/shared
+    ports:
+      - "8000:8000"
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    depends_on:
+      - server
+    environment:
+      - SERVER_URL=http://server:8000
+    ports:
+      - "8501:8501"
+
+volumes:
+  contract-data:
