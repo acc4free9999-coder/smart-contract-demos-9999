@@ -10,6 +10,10 @@ contract EventTicket {
     uint256 public maxResalePercent = 110; // toi da 110% gia goc khi ban lai
     uint256 private _nextTokenId = 1;
 
+    string public termsText;
+    bytes32 public termsHash;
+    mapping(address => mapping(bytes32 => uint256)) public signedAt; // signer => termsHash => timestamp
+
     struct Ticket {
         uint256 seatId;
         uint256 originalPrice;
@@ -25,6 +29,8 @@ contract EventTicket {
     event TicketCheckedIn(uint256 indexed tokenId, address indexed staffMember);
     event TicketTransferred(uint256 indexed tokenId, address indexed from, address indexed to, uint256 price);
     event StaffUpdated(address indexed account, bool isStaff);
+    event TermsUpdated(bytes32 indexed hash);
+    event TermsSigned(address indexed signer, bytes32 indexed hash, uint256 timestamp);
 
     modifier onlyOrganizer() {
         require(msg.sender == organizer, "Chi ban to chuc moi co quyen");
@@ -48,8 +54,58 @@ contract EventTicket {
         emit StaffUpdated(account, isStaff);
     }
 
-    /// @notice Ban to chuc phat hanh ve moi truc tiep vao vi nguoi mua
+    /// @notice Ban to chuc thiet lap/cap nhat noi dung dieu khoan mua ve. Hash duoc tinh tren-chain
+    /// tu chinh noi dung nay, dam bao khong the "am tham" doi noi dung ma khong doi hash.
+    function setTerms(string memory text) external onlyOrganizer {
+        termsText = text;
+        termsHash = keccak256(bytes(text));
+        emit TermsUpdated(termsHash);
+    }
+
+    /// @notice Ghi nhan chu ky (da ky off-chain bang private key cua nguoi mua) vao dieu khoan
+    /// hien hanh. Ban to chuc (backend) la nguoi goi ham nay thay cho nguoi mua (mo hinh gasless:
+    /// nguoi mua chi ky message, khong can tra phi gas). Chu ky duoc xac minh bang ecrecover -
+    /// khong the gia mao neu khong co dung private key cua "signer".
+    function recordSignature(address signer, bytes memory signature) external onlyOrganizer {
+        require(termsHash != bytes32(0), "Chua thiet lap dieu khoan");
+        require(signedAt[signer][termsHash] == 0, "Da ky dieu khoan nay roi");
+
+        bytes32 ethSignedHash = keccak256(
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", termsHash)
+        );
+        address recovered = _recoverSigner(ethSignedHash, signature);
+        require(recovered == signer, "Chu ky khong hop le - khong khop dia chi");
+
+        signedAt[signer][termsHash] = block.timestamp;
+        emit TermsSigned(signer, termsHash, block.timestamp);
+    }
+
+    function hasSignedCurrentTerms(address account) public view returns (bool) {
+        return signedAt[account][termsHash] != 0;
+    }
+
+    function _recoverSigner(bytes32 ethSignedHash, bytes memory signature) internal pure returns (address) {
+        require(signature.length == 65, "Chu ky khong dung do dai (can 65 byte)");
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+        if (v < 27) {
+            v += 27;
+        }
+        return ecrecover(ethSignedHash, v, r, s);
+    }
+
+    /// @notice Ban to chuc phat hanh ve moi truc tiep vao vi nguoi mua.
+    /// Bat buoc nguoi mua da ky dieu khoan mua ve hien hanh truoc do.
     function mintTicket(address to, uint256 seatId, uint256 price) external onlyOrganizer returns (uint256) {
+        require(termsHash != bytes32(0), "Chua thiet lap dieu khoan mua ve");
+        require(hasSignedCurrentTerms(to), "Nguoi mua chua ky dieu khoan mua ve");
+
         uint256 tokenId = _nextTokenId++;
         tickets[tokenId] = Ticket({
             seatId: seatId,

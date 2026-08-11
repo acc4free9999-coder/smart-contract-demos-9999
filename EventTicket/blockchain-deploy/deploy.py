@@ -35,6 +35,15 @@ CONTRACT_PATH = Path(
     "/app/contracts/EventTicket.sol"
 )
 
+DEFAULT_TERMS = os.environ.get(
+    "DEFAULT_TERMS",
+    "DIEU KHOAN MUA VE:\n"
+    "1. Ve da mua khong hoan tra sau khi check-in.\n"
+    "2. Gia ban lai khong duoc vuot qua 110% gia goc.\n"
+    "3. Nguoi giu ve la nguoi duy nhat duoc phep vao cong bang ve nay.\n"
+    "4. Ban to chuc co quyen tu choi ve nghi ngo gia mao.",
+)
+
 
 # ============================================================
 # Ganache
@@ -540,7 +549,8 @@ def deploy():
     4. Get deployer account
     5. Deploy contract
     6. Wait for transaction
-    7. Save deployment information
+    7. Thiet lap dieu khoan mua ve mac dinh
+    8. Save deployment information
     """
 
     print(
@@ -741,6 +751,44 @@ def deploy():
     )
 
     # --------------------------------------------------------
+    # Thiet lap dieu khoan mua ve mac dinh
+    # --------------------------------------------------------
+
+    print(
+        "Dang thiet lap dieu khoan mua ve mac dinh..."
+    )
+
+    ticket_contract = w3.eth.contract(
+        address=contract_address,
+        abi=abi,
+    )
+
+    try:
+
+        terms_tx_hash = ticket_contract.functions.setTerms(
+            DEFAULT_TERMS
+        ).transact(
+            {
+                "from": deployer,
+            }
+        )
+
+        w3.eth.wait_for_transaction_receipt(
+            terms_tx_hash
+        )
+
+    except Exception as exc:
+
+        raise RuntimeError(
+            "Khong the thiet lap dieu khoan mua ve "
+            f"mac dinh: {exc}"
+        ) from exc
+
+    print(
+        "Da thiet lap dieu khoan mua ve mac dinh."
+    )
+
+    # --------------------------------------------------------
     # Save result
     # --------------------------------------------------------
 
@@ -764,4 +812,3 @@ def deploy():
 
 if __name__ == "__main__":
     deploy()
-

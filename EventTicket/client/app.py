@@ -8,6 +8,8 @@ import numpy as np
 import qrcode
 import requests
 import streamlit as st
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 SERVER_URL = os.environ.get("SERVER_URL", "http://server:8000")
 WEI_PER_ETH = Decimal("1000000000000000000")
@@ -56,6 +58,18 @@ role = st.sidebar.radio("Chon vai tro", ["Nguoi mua", "Ban to chuc", "Nhan vien 
 
 if role == "Ban to chuc":
     st.header("Phat hanh ve moi (Mint Ticket)")
+
+    to_address_check = st.text_input("Kiem tra dia chi da ky dieu khoan chua (tuy chon)", key="check_signed")
+    if to_address_check:
+        try:
+            status = requests.get(f"{SERVER_URL}/terms/status/{to_address_check}", timeout=5).json()
+            if status["signed"]:
+                st.success(f"✅ Dia chi nay da ky dieu khoan mua ve hien hanh.")
+            else:
+                st.warning("⚠️ Dia chi nay CHUA ky dieu khoan. Phat hanh ve se bi tu choi.")
+        except Exception as e:
+            st.error(f"Loi kiem tra: {e}")
+
     with st.form("mint_form"):
         to_address = st.text_input("Dia chi vi nguoi mua (0x...)")
         seat_id = st.number_input("So ghe", min_value=1, step=1)
@@ -70,6 +84,8 @@ if role == "Ban to chuc":
                 resp.raise_for_status()
                 ticket = resp.json()
                 st.success(f"Da phat hanh ve #{ticket['token_id']} cho ghe {ticket['seat_id']}")
+            except requests.HTTPError as e:
+                st.error(f"Bi tu choi: {e.response.json().get('detail', str(e))}")
             except Exception as e:
                 st.error(f"Loi: {e}")
 
@@ -82,7 +98,87 @@ if role == "Ban to chuc":
     except Exception:
         pass
 
+    st.divider()
+    with st.expander("Cap nhat dieu khoan mua ve"):
+        st.caption("Luu y: cap nhat noi dung se tao ra hash moi -> nguoi da ky truoc do se can ky lai.")
+        try:
+            current_terms = requests.get(f"{SERVER_URL}/terms", timeout=5).json()
+        except Exception:
+            current_terms = {"text": "", "hash": ""}
+        new_terms_text = st.text_area("Noi dung dieu khoan", value=current_terms.get("text", ""), height=180)
+        if st.button("Cap nhat dieu khoan"):
+            try:
+                resp = requests.put(f"{SERVER_URL}/terms", json={"text": new_terms_text})
+                resp.raise_for_status()
+                st.success("Da cap nhat dieu khoan. Hash moi: " + resp.json()["hash"])
+            except Exception as e:
+                st.error(f"Loi: {e}")
+
 elif role == "Nguoi mua":
+    st.header("Diem danh & Ky dieu khoan mua ve")
+    st.caption(
+        "Trong mo hinh nay, ban to chuc (backend) tra phi gas thay ban - ban chi can ky "
+        "message bang private key, khong can co ETH trong vi. Day la vi 'demo' tao ngay "
+        "trong trinh duyet, KHONG dung cho vi that."
+    )
+
+    if "buyer_private_key" not in st.session_state:
+        st.session_state.buyer_private_key = None
+        st.session_state.buyer_address = None
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔑 Tao vi demo moi"):
+            acct = Account.create()
+            st.session_state.buyer_private_key = acct.key.hex()
+            st.session_state.buyer_address = acct.address
+    with col2:
+        if st.session_state.buyer_address:
+            st.code(st.session_state.buyer_address, language=None)
+
+    if st.session_state.buyer_address:
+        try:
+            terms = requests.get(f"{SERVER_URL}/terms", timeout=5).json()
+        except Exception as e:
+            st.error(f"Loi tai dieu khoan: {e}")
+            terms = None
+
+        if terms and terms.get("text"):
+            st.text_area("Dieu khoan mua ve", value=terms["text"], height=160, disabled=True)
+
+            try:
+                status = requests.get(
+                    f"{SERVER_URL}/terms/status/{st.session_state.buyer_address}", timeout=5
+                ).json()
+            except Exception:
+                status = {"signed": False}
+
+            if status.get("signed"):
+                st.success("✅ Vi nay da ky dieu khoan hien hanh. Ban to chuc co the phat hanh ve cho ban.")
+            else:
+                agree = st.checkbox("Toi da doc va dong y voi dieu khoan mua ve tren")
+                if st.button("✍️ Ky dieu khoan", disabled=not agree):
+                    try:
+                        terms_hash_bytes = bytes.fromhex(terms["hash"][2:])
+                        message = encode_defunct(primitive=terms_hash_bytes)
+                        signed = Account.sign_message(
+                            message, private_key=st.session_state.buyer_private_key
+                        )
+                        resp = requests.post(
+                            f"{SERVER_URL}/terms/sign",
+                            json={
+                                "address": st.session_state.buyer_address,
+                                "signature": signed.signature.hex(),
+                            },
+                        )
+                        resp.raise_for_status()
+                        st.success("Da ky dieu khoan thanh cong! Bao dia chi vi nay cho ban to chuc de nhan ve.")
+                    except requests.HTTPError as e:
+                        st.error(f"Bi tu choi: {e.response.json().get('detail', str(e))}")
+                    except Exception as e:
+                        st.error(f"Loi: {e}")
+
+    st.divider()
     st.header("Ve cua toi")
     address = st.text_input("Nhap dia chi vi cua ban (0x...)")
     if address:

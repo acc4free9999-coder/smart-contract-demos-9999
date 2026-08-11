@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from eth_account import Account
+from eth_account.messages import encode_defunct
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from web3 import Web3
@@ -63,6 +65,15 @@ class CheckInRequest(BaseModel):
     token_id: int
 
 
+class SignTermsRequest(BaseModel):
+    address: str
+    signature: str  # hex string, vi du "0xabc..."
+
+
+class UpdateTermsRequest(BaseModel):
+    text: str
+
+
 class TicketResponse(BaseModel):
     token_id: int
     seat_id: int
@@ -100,8 +111,14 @@ def get_event():
 
 @app.post("/tickets/mint", response_model=TicketResponse)
 def mint_ticket(req: MintRequest):
+    to_checksum = Web3.to_checksum_address(req.to_address)
+    if not contract.functions.hasSignedCurrentTerms(to_checksum).call():
+        raise HTTPException(
+            status_code=400,
+            detail="Nguoi mua chua ky dieu khoan mua ve. Vui long ky truoc khi phat hanh ve.",
+        )
     tx_hash = contract.functions.mintTicket(
-        Web3.to_checksum_address(req.to_address), req.seat_id, req.price_wei
+        to_checksum, req.seat_id, req.price_wei
     ).transact({"from": organizer_address})
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
     logs = contract.events.TicketMinted().process_receipt(receipt)
@@ -151,3 +168,59 @@ def list_demo_accounts():
     if accounts_path.exists():
         return json.loads(accounts_path.read_text())
     return []
+
+
+@app.get("/terms")
+def get_terms():
+    text = contract.functions.termsText().call()
+    terms_hash = contract.functions.termsHash().call()
+    return {"text": text, "hash": Web3.to_hex(terms_hash)}
+
+
+@app.put("/terms")
+def update_terms(req: UpdateTermsRequest):
+    """Chi ban to chuc dung: cap nhat noi dung dieu khoan. Luu y: cap nhat dieu khoan
+    se tao hash moi, nguoi da ky dieu khoan cu se can ky lai dieu khoan moi."""
+    tx_hash = contract.functions.setTerms(req.text).transact({"from": organizer_address})
+    w3.eth.wait_for_transaction_receipt(tx_hash)
+    return get_terms()
+
+
+@app.get("/terms/status/{address}")
+def terms_status(address: str):
+    checksum = Web3.to_checksum_address(address)
+    signed = contract.functions.hasSignedCurrentTerms(checksum).call()
+    return {"address": checksum, "signed": signed}
+
+
+@app.post("/terms/sign")
+def sign_terms(req: SignTermsRequest):
+    terms_hash = contract.functions.termsHash().call()
+    if terms_hash == b"\x00" * 32:
+        raise HTTPException(status_code=400, detail="Chua thiet lap dieu khoan mua ve")
+
+    checksum_address = Web3.to_checksum_address(req.address)
+
+    # Xac minh chu ky truoc, tra loi ro rang cho nguoi dung neu sai, khong can ton phi gas
+    # de thu roi moi biet fail.
+    message = encode_defunct(primitive=terms_hash)
+    try:
+        recovered = Account.recover_message(message, signature=req.signature)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Chu ky khong dung dinh dang")
+
+    if recovered.lower() != checksum_address.lower():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chu ky khong khop dia chi. Chu ky nay thuc ra thuoc ve {recovered}",
+        )
+
+    if contract.functions.signedAt(checksum_address, terms_hash).call() != 0:
+        raise HTTPException(status_code=400, detail="Dia chi nay da ky dieu khoan hien hanh roi")
+
+    tx_hash = contract.functions.recordSignature(
+        checksum_address, Web3.to_bytes(hexstr=req.signature)
+    ).transact({"from": organizer_address})
+    w3.eth.wait_for_transaction_receipt(tx_hash)
+
+    return {"address": checksum_address, "signed": True, "terms_hash": Web3.to_hex(terms_hash)}
